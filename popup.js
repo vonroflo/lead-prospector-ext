@@ -6,8 +6,8 @@ document.addEventListener("DOMContentLoaded",async()=>{
     document.getElementById("warning").style.display="block";
     document.getElementById("controls").style.display="none";
   }
-  chrome.storage.local.get(["ghlLeads","ghlQuery"],(d)=>{
-    if(d.ghlLeads?.length){allLeads=d.ghlLeads;searchQuery=d.ghlQuery||"";render();}
+  chrome.storage.local.get(["lpLeads","lpQuery"],(d)=>{
+    if(d.lpLeads?.length){allLeads=d.lpLeads;searchQuery=d.lpQuery||"";render();}
   });
   document.getElementById("scrapeBtn").addEventListener("click",()=>scrape(false));
   document.getElementById("deepBtn").addEventListener("click",()=>scrape(true));
@@ -18,7 +18,7 @@ document.addEventListener("DOMContentLoaded",async()=>{
   document.querySelectorAll(".fbtn").forEach(b=>b.addEventListener("click",()=>{
     filter=b.dataset.f;
     document.querySelectorAll(".fbtn").forEach(x=>x.className="fbtn");
-    b.className="fbtn "+(filter==="no-website"?"act-r":filter==="hot"?"act-g":"active");
+    b.className="fbtn "+(filter==="no-website"?"act-r":filter==="hot"?"act-g":filter==="social-only"?"act-o":"active");
     render();
   }));
 });
@@ -52,8 +52,8 @@ async function scrape(deep){
       const exist=new Set(allLeads.map(l=>l.name.toLowerCase()));
       const nw=r.data.filter(l=>!exist.has(l.name.toLowerCase()));
       allLeads=[...allLeads,...nw];
-      allLeads.sort((a,b)=>{const as=a.status==="HOT LEAD"?3:a.status==="NO WEBSITE"?2:1,bs=b.status==="HOT LEAD"?3:b.status==="NO WEBSITE"?2:1;return as!==bs?bs-as:(b.reviews||0)-(a.reviews||0);});
-      chrome.storage.local.set({ghlLeads:allLeads,ghlQuery:searchQuery});
+      allLeads.sort((a,b)=>{const p=s=>s==="HOT LEAD"?4:s==="NO WEBSITE"?3:s==="SOCIAL ONLY"?2:1;const as=p(a.status),bs=p(b.status);return as!==bs?bs-as:(b.reviews||0)-(a.reviews||0);});
+      chrome.storage.local.set({lpLeads:allLeads,lpQuery:searchQuery});
       render();
       toast("Found "+r.data.length+" businesses"+(nw.length<r.data.length?" ("+nw.length+" new)":""));
     }else toast("No results. Make sure listings are visible.");
@@ -63,7 +63,7 @@ async function scrape(deep){
 
 function clearAll(){
   allLeads=[];dispLeads=[];selected=new Set();filter="all";searchQuery="";
-  chrome.storage.local.remove(["ghlLeads","ghlQuery"]);
+  chrome.storage.local.remove(["lpLeads","lpQuery"]);
   ["stats","filters","footer"].forEach(id=>document.getElementById(id).style.display="none");
   document.getElementById("list").style.display="none";
   document.getElementById("list").innerHTML="";
@@ -76,6 +76,7 @@ function clearAll(){
 function render(){
   dispLeads=allLeads.filter(l=>{
     if(filter==="no-website")return !l.has_website;
+    if(filter==="social-only")return l.social_only && !l.has_website;
     if(filter==="hot")return l.status==="HOT LEAD";
     if(filter==="has-website")return l.has_website;return true;
   });
@@ -89,13 +90,19 @@ function render(){
   const list=document.getElementById("list");list.innerHTML="";
   dispLeads.forEach((l,i)=>{
     const c=document.createElement("div");
-    c.className="card "+(l.status==="HOT LEAD"?"hot":l.status==="NO WEBSITE"?"nosite":"");
+    c.className="card "+(l.status==="HOT LEAD"?"hot":l.status==="NO WEBSITE"?"nosite":l.status==="SOCIAL ONLY"?"socialonly":"");
     if(selected.has(i))c.classList.add("sel");
-    const tag=l.status==="HOT LEAD"?'<span class="tag tag-o">HOT LEAD</span>':l.status==="NO WEBSITE"?'<span class="tag tag-r">NO WEBSITE</span>':'<span class="tag tag-g">Has Site</span>';
+    const tag=l.status==="HOT LEAD"?'<span class="tag tag-o">HOT LEAD</span>':l.status==="SOCIAL ONLY"?'<span class="tag tag-y">SOCIAL ONLY</span>':l.status==="NO WEBSITE"?'<span class="tag tag-r">NO WEBSITE</span>':'<span class="tag tag-g">Has Site</span>';
     const ph=l.phone?'<span class="cph">'+l.phone+'</span>':'<span style="color:#999">No phone</span>';
     const ws=l.website?'<a href="'+l.website+'" target="_blank" class="cws">'+l.website.replace(/^https?:\/\/(www\.)?/,"").replace(/\/$/,"")+'</a>':'<span style="color:var(--r);font-weight:500;font-size:11px">No website</span>';
     const stars=l.rating?"\u2605".repeat(Math.round(l.rating))+" "+l.rating:"";
-    c.innerHTML='<div class="cname"><span>'+l.name+'</span>'+tag+'</div><div class="cmeta">'+ph+" "+ws+(stars?' <span class="stars">'+stars+'</span>':"")+(l.reviews?' <span>('+l.reviews+' reviews)</span>':"")+'</div>';
+    // Show social/profile links if present
+    let socialHtml='';
+    if(l.socialLinks&&l.socialLinks.length){
+      const labels=l.socialLinks.map(u=>{try{const h=new URL(u).hostname.replace(/^www\./,'').split('.')[0];return '<a href="'+u+'" target="_blank" class="csoc">'+h.charAt(0).toUpperCase()+h.slice(1)+'</a>';}catch(e){return '';}});
+      socialHtml='<div class="cmeta csocrow">'+labels.join(' ')+'</div>';
+    }
+    c.innerHTML='<div class="cname"><span>'+l.name+'</span>'+tag+'</div><div class="cmeta">'+ph+" "+ws+(stars?' <span class="stars">'+stars+'</span>':"")+(l.reviews?' <span>('+l.reviews+' reviews)</span>':"")+'</div>'+socialHtml;
     c.addEventListener("click",e=>{if(e.target.tagName==="A")return;selected.has(i)?selected.delete(i):selected.add(i);c.classList.toggle("sel");updFooter();});
     list.appendChild(c);
   });
@@ -107,14 +114,14 @@ function updFooter(){document.getElementById("finfo").textContent=selected.size?
 function exportCSV(){
   const leads=selected.size?[...selected].map(i=>dispLeads[i]):dispLeads;
   if(!leads.length){toast("No leads");return;}
-  const h=["Business Name","Phone","Website","Rating","Reviews","Status","Address","Category","Google Maps URL"];
+  const h=["Business Name","Phone","Website","Social Profiles","Rating","Reviews","Status","Address","Category","Google Maps URL"];
   const rows=[h.join(",")];
-  leads.forEach(l=>rows.push(['"'+(l.name||"").replace(/"/g,'""')+'"','"'+(l.phone||"")+'"','"'+(l.website||"")+'"',l.rating||0,l.reviews||0,'"'+(l.status||"")+'"','"'+(l.address||"").replace(/"/g,'""')+'"','"'+(l.category||"").replace(/"/g,'""')+'"','"'+(l.mapsUrl||"")+'"'].join(",")));
+  leads.forEach(l=>rows.push(['"'+(l.name||"").replace(/"/g,'""')+'"','"'+(l.phone||"")+'"','"'+(l.website||"")+'"','"'+((l.socialLinks||[]).join(" | "))+'"',l.rating||0,l.reviews||0,'"'+(l.status||"")+'"','"'+(l.address||"").replace(/"/g,'""')+'"','"'+(l.category||"").replace(/"/g,'""')+'"','"'+(l.mapsUrl||"")+'"'].join(",")));
   const blob=new Blob([rows.join("\n")],{type:"text/csv"});
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a");a.href=url;
   // === FILENAME FROM SEARCH QUERY ===
-  let fn="ghl_prospects_"+new Date().toISOString().slice(0,10)+".csv";
+  let fn="leads_"+new Date().toISOString().slice(0,10)+".csv";
   if(searchQuery){
     const clean=searchQuery.toLowerCase().replace(/[^a-z0-9\s]/g,"").trim().replace(/\s+/g,"_");
     fn="prospects_"+clean+"_"+new Date().toISOString().slice(0,10)+".csv";
@@ -126,7 +133,7 @@ function exportCSV(){
 function copyLeads(){
   const leads=selected.size?[...selected].map(i=>dispLeads[i]):dispLeads;
   if(!leads.length){toast("No leads");return;}
-  const t=leads.map(l=>l.name+"\t"+(l.phone||"N/A")+"\t"+(l.website||"No website")+"\t"+(l.rating||"N/A")+"\t"+(l.reviews||0)+" reviews\t"+l.status).join("\n");
+  const t=leads.map(l=>l.name+"\t"+(l.phone||"N/A")+"\t"+(l.website||"No website")+"\t"+((l.socialLinks||[]).join(", ")||"None")+"\t"+(l.rating||"N/A")+"\t"+(l.reviews||0)+" reviews\t"+l.status).join("\n");
   navigator.clipboard.writeText(t).then(()=>toast("Copied "+leads.length+" leads"));
 }
 

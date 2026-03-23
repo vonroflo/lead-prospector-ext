@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "GHL Prospector \u2014 Google Maps Lead Scraper",
-  "description": "Scrape business leads from Google Maps. Find no-website businesses, export to CSV for GoHighLevel. Free & unlimited.",
+  "name": "Lead Prospector \u2014 Google Maps Lead Scraper",
+  "description": "Scrape business leads from Google Maps. Find no-website businesses, export to CSV. Free & unlimited.",
   "version": "1.2.0",
   "author": "Ro",
   "permissions": [

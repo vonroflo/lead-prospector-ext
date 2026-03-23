@@ -1,8 +1,47 @@
 (function(){
 "use strict";
-if(window.__ghlP)return;window.__ghlP=true;
+if(window.__lpInit)return;window.__lpInit=true;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Known third-party profile/booking platforms (not a real website)
+const SOCIAL_DOMAINS = [
+  'facebook.com','fb.com','instagram.com','twitter.com','x.com',
+  'tiktok.com','youtube.com','linkedin.com','pinterest.com','nextdoor.com',
+  'fresha.com','vagaro.com','booksy.com','schedulicity.com','mindbodyonline.com',
+  'mindbody.io','squareup.com','square.site','setmore.com','calendly.com',
+  'yelp.com','tripadvisor.com','thumbtack.com','angi.com','angieslist.com',
+  'homeadvisor.com','bark.com','houzz.com','birdeye.com',
+  'doordash.com','ubereats.com','grubhub.com','postmates.com',
+  'healthgrades.com','zocdoc.com','vitals.com','realself.com',
+  'yellowpages.com','bbb.org','manta.com','chamberofcommerce.com'
+];
+
+function isSocialUrl(url){
+  try{ const h=new URL(url).hostname.replace(/^www\./,''); return SOCIAL_DOMAINS.some(d=>h===d||h.endsWith('.'+d)); }catch(e){return false;}
+}
+
+// Google Maps injects generic booking widget links (same URL for every business in a category).
+// These contain rwg_token, /googlemap/, or /reserve/ and are NOT the business's actual profile.
+function isGenericBookingLink(url){
+  return /rwg_token|\/googlemap\/|\/reserve\?/.test(url);
+}
+
+function classifyWebPresence(website, socialLinks){
+  const hasRealSite = !!website && !isSocialUrl(website);
+  const hasSocial = socialLinks && socialLinks.length > 0;
+  if(hasRealSite) return {has_website:true, social_only:false};
+  if(hasSocial) return {has_website:false, social_only:true};
+  return {has_website:false, social_only:false};
+}
+
+function getStatus(has_website, social_only, reviews){
+  if(has_website) return "Has Website";
+  if(social_only && reviews >= 5) return "HOT LEAD";
+  if(social_only) return "SOCIAL ONLY";
+  if(reviews >= 5) return "HOT LEAD";
+  return "NO WEBSITE";
+}
 
 /**
  * Detect which layout Google Maps is using:
@@ -43,13 +82,41 @@ function scrapeExpanded(){
       }
       if(!reviews){ const m=item.textContent.match(/\(([\d,]+)\)/); if(m) reviews=parseInt(m[1].replace(",",""),10); }
 
-      // Website: look for <a class="lcr4fd"> containing "Website" text
+      // Website: multiple strategies to find website link
       let website = '';
+      // Strategy 1: action buttons with "Website" text (original class)
       item.querySelectorAll('a.lcr4fd').forEach(a => {
         if((a.textContent||'').trim().toLowerCase().includes('website')){
           website = a.getAttribute('href') || '';
         }
       });
+      // Strategy 2: any link with aria-label containing "website"
+      if(!website){
+        item.querySelectorAll('a[aria-label]').forEach(a => {
+          if((a.getAttribute('aria-label')||'').toLowerCase().includes('website')){
+            website = a.getAttribute('href') || '';
+          }
+        });
+      }
+      // Strategy 3: any link with data-tooltip containing "website"
+      if(!website){
+        const ttEl = item.querySelector('a[data-tooltip*="website" i], a[data-tooltip*="Website"]');
+        if(ttEl) website = ttEl.getAttribute('href') || '';
+      }
+      // Strategy 4: scan all links for external (non-google) URLs
+      const socialLinks = [];
+      if(!website){
+        item.querySelectorAll('a[href]').forEach(a => {
+          const h = a.getAttribute('href')||'';
+          if(h.startsWith('http') && !h.includes('google.com') && !h.includes('google.co') && !h.includes('goo.gl') && !h.includes('googleapis.com') && !isGenericBookingLink(h)){
+            if(isSocialUrl(h)){
+              socialLinks.push(h);
+            } else if(!website){
+              website = h;
+            }
+          }
+        });
+      }
 
       // Phone: regex from card text
       const pm = item.textContent.match(/\(\d{3}\)\s*\d{3}[- .]?\d{4}/);
@@ -76,9 +143,12 @@ function scrapeExpanded(){
       const linkEl = item.querySelector('a.hfpxzc') || item.querySelector('a[href*="/maps/place/"]');
       const mapsUrl = linkEl ? linkEl.href : '';
 
-      const has_website = !!website;
-      const status = !has_website && reviews >= 5 ? "HOT LEAD" : !has_website ? "NO WEBSITE" : "Has Website";
-      results.push({name, phone, website, rating, reviews, address, category, mapsUrl, has_website, status});
+      // If "website" is actually a social link, move it to socialLinks
+      if(website && isGenericBookingLink(website)){ website=''; }
+      if(website && isSocialUrl(website)){ socialLinks.push(website); website=''; }
+      const {has_website, social_only} = classifyWebPresence(website, socialLinks);
+      const status = getStatus(has_website, social_only, reviews);
+      results.push({name, phone, website, rating, reviews, address, category, mapsUrl, has_website, social_only, socialLinks, status});
     } catch(e){}
   });
   return results;
@@ -142,6 +212,7 @@ async function scrapeCompact(maxScrolls){
     }
 
     let phone="", website="", address="";
+    const socialLinks = [];
 
     if(found){
       // ADDRESS
@@ -160,17 +231,47 @@ async function scrapeCompact(maxScrolls){
         if(!phone){ const t = phoneEl.querySelector('.Io6YTe'); if(t) phone=t.textContent.trim(); }
       }
 
-      // WEBSITE
+      // WEBSITE — multiple strategies
+      // Strategy 1: authority link (standard)
       const webEl = document.querySelector('a[data-item-id="authority"]');
       if(webEl) website = webEl.getAttribute("href")||"";
 
-      // Fallback: action links
+      // Strategy 2: action links
       if(!website){
         document.querySelectorAll('a[data-item-id^="action:"]').forEach(a => {
           const h = a.getAttribute("href")||"";
-          if(h && h.startsWith("http") && !h.includes("google.com") && !website) website=h;
+          if(h && h.startsWith("http") && !h.includes("google.com") && !isGenericBookingLink(h) && !website) website=h;
         });
       }
+
+      // Strategy 3: aria-label containing "website"
+      if(!website){
+        document.querySelectorAll('a[aria-label]').forEach(a => {
+          const lbl = (a.getAttribute("aria-label")||"").toLowerCase();
+          if(lbl.includes("website") && !website){
+            website = a.getAttribute("href")||"";
+          }
+        });
+      }
+
+      // Strategy 4: link with text content showing a domain
+      if(!website){
+        document.querySelectorAll('a[href]').forEach(a => {
+          const h = a.getAttribute("href")||"";
+          const t = (a.textContent||"").trim().toLowerCase();
+          if(h.startsWith("http") && !h.includes("google.com") && !h.includes("google.co") && !h.includes("goo.gl") && !h.includes("googleapis.com") && (t.includes(".com") || t.includes(".net") || t.includes(".org") || t.includes(".io") || t.includes("website")) && !website){
+            website = h;
+          }
+        });
+      }
+
+      // Collect social/profile links from detail panel
+      document.querySelectorAll('a[href]').forEach(a => {
+        const h = a.getAttribute("href")||"";
+        if(h.startsWith("http") && isSocialUrl(h) && !isGenericBookingLink(h) && !socialLinks.includes(h)){
+          socialLinks.push(h);
+        }
+      });
 
       // Check for "Add website" (confirms no website)
       let noSiteConfirmed = false;
@@ -180,9 +281,12 @@ async function scrapeCompact(maxScrolls){
       if(noSiteConfirmed) website = "";
     }
 
-    const has_website = !!website;
-    const status = !has_website && reviews >= 5 ? "HOT LEAD" : !has_website ? "NO WEBSITE" : "Has Website";
-    results.push({name, phone, website: has_website ? website : "", rating, reviews, address, category, mapsUrl: el.href||"", has_website, status});
+    // If "website" is actually a social link, move it
+    if(website && isGenericBookingLink(website)){ website=''; }
+    if(website && isSocialUrl(website)){ if(!socialLinks.includes(website)) socialLinks.push(website); website=''; }
+    const {has_website, social_only} = classifyWebPresence(website, socialLinks);
+    const status = getStatus(has_website, social_only, reviews);
+    results.push({name, phone, website, rating, reviews, address, category, mapsUrl: el.href||"", has_website, social_only, socialLinks, status});
 
     // Progress update
     try{ chrome.runtime.sendMessage({action:"progress", current:i+1, total, name}); }catch(e){}
@@ -218,7 +322,7 @@ function quickScrape(){
         const revm = label.match(/([\d,]+)\s*review/i); if(revm) reviews=parseInt(revm[1].replace(",",""),10);
       }
     }
-    results.push({name, phone:"", website:"", rating, reviews, address:"", category:"", mapsUrl:el.href||"", has_website:false, status:"NEEDS DEEP SCRAPE"});
+    results.push({name, phone:"", website:"", rating, reviews, address:"", category:"", mapsUrl:el.href||"", has_website:false, social_only:false, socialLinks:[], status:"NEEDS DEEP SCRAPE"});
   });
   return results;
 }
