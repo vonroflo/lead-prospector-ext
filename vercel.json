@@ -1,3 +1,5 @@
 {
-  "outputDirectory": "landing"
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/landing/$1" }
+  ]
 }
